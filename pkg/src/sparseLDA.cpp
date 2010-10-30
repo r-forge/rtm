@@ -2,43 +2,42 @@
 #include <stdint.h>
 #include <cmath>
 #include <assert.h>
+#include <vector>
 
 #define min(x, y) (((x) < (y)) ? (x) : (y)) 
 
 class Corpus {
-	unsigned int *words_;
-	unsigned int *lengths_;
+	std::vector<unsigned int> words_;
+	std::vector<unsigned int> lengths_;
 	unsigned int D_;
 	unsigned int V_;
-	unsigned int *counts_;
-	unsigned int *indices_;
+	std::vector<unsigned int> counts_;
+	std::vector<unsigned int> indices_;
 	unsigned int total_count_;
 
  public:
-	Corpus(unsigned int words[],
-				 unsigned int lengths[],
-				 unsigned int D,
-				 unsigned int V) :
-	words_(words), lengths_(lengths), D_(D), V_(V) {
-		indices_ = new unsigned int[D];
+	void load(const std::vector<unsigned int>& words,
+						const std::vector<unsigned int>& lengths,
+						unsigned int V) {
+		words_ = words;
+		lengths_ = lengths;
+		D_ = words.size();
+		V_ = V; 
+		//		words_(words), lengths_(lengths), D_(words.size()), V_(V) {
+		indices_.resize(D_);
 		
 		indices_[0] = 0;
 		total_count_ = lengths[0];
-		for (unsigned int ii = 1; ii < D; ++ii) {
+		for (unsigned int ii = 1; ii < D_; ++ii) {
 			indices_[ii] = indices_[ii - 1] + lengths[ii - 1];
 			total_count_ += lengths[ii];
 		}
 
-		counts_ = new unsigned int[V];
+		counts_.resize(V);
 
 		for (unsigned int ii = 0; ii < total_count_; ++ii) {
 			counts_[words[ii]]++;
 		}
-	}
-
-	~Corpus() {
-		delete counts_;
-		delete indices_;
 	}
 
 	unsigned int getIndex(int document, int word) const {
@@ -65,14 +64,9 @@ class Corpus {
 		return words_[index];
 	}
 
-  unsigned int* getDocument(int document) const {
-		return &words_[indices_[document]];
-	}
-
 	unsigned int getV() const {
 		return V_;
-	}
-	
+	}	
 };
 
 class Topics {
@@ -216,6 +210,8 @@ class SparseRTM {
 
    SparseRTM(const Corpus& corpus, double alpha, double eta, double *beta, unsigned int K) :
   	alpha_(alpha), eta_(eta), beta_(beta), K_(K), V_(corpus.getV()), corpus_(corpus) {
+
+	  GetRNGstate();
 		topic_sums_ = new uint32_t[K];
 		document_sums_ = new uint32_t[D_];
 		topics_ = new Topics(K, corpus);
@@ -235,6 +231,8 @@ class SparseRTM {
 		// Allocate r.
 		r_ = new double[K_];
 		r_sum_ = 0.0;		
+
+		PutRNGstate();
 	}
 
 	~SparseRTM() {
@@ -244,11 +242,10 @@ class SparseRTM {
 
 	void initializeZ() {
 		for (unsigned int dd = 0; dd < corpus_.getDocumentCount(); ++dd) { 
-			unsigned int *words = corpus_.getDocument(dd);
 			for (int ww = 0; ww < corpus_.getLength(dd); ++ww) {
 				int index = corpus_.getIndex(dd, ww);
 				z_[index] = unif_rand() * K_;
-				topics_->updateCount(words[ww], z_[index], 1);
+				topics_->updateCount(corpus_.getWord(index), z_[index], 1);
 				updateCounts(dd, z_[index], 1);
 			}
 		}
@@ -263,25 +260,27 @@ class SparseRTM {
 	}
 
 	void iterateCorpus(int num_iterations) {
+		GetRNGstate();
 		for (int ii = 0; ii < num_iterations; ++ii) {
 			for (unsigned int dd = 0; dd < corpus_.getDocumentCount(); ++dd) {
 				iterateDocument(dd);
 			}
 		}
+		PutRNGstate();
 	}
 
 	void iterateDocument(int document) {
 		initializeR(document);
-		unsigned int *words = corpus_.getDocument(document);
 		for (int ww = 0; ww < corpus_.getLength(document); ++ww) {
-			int old_topic = z_[corpus_.getIndex(document, ww)];
-			topics_->updateCount(words[ww], old_topic, -1);
+			int index = corpus_.getIndex(document, ww);
+			int old_topic = z_[index];
+			topics_->updateCount(corpus_.getWord(index), old_topic, -1);
 			updateCounts(document, old_topic, -1);
 			updateSR(document, old_topic);
 
-			int new_topic = sampleWord(words[ww]);
-			z_[corpus_.getIndex(document, ww)] = new_topic;
-			topics_->updateCount(words[ww], new_topic, 1);
+			int new_topic = sampleWord(corpus_.getWord(index));
+			z_[index] = new_topic;
+			topics_->updateCount(corpus_.getWord(index), new_topic, 1);
 			updateCounts(document, new_topic, 1);
 			updateSR(document, new_topic);
 		}
@@ -347,3 +346,15 @@ class SparseRTM {
 		r_sum_ += r_[topic];
 	}
 };
+
+RCPP_MODULE(rtm) {
+	using namespace Rcpp;
+
+	class_<Corpus>("Corpus")
+		.const_method("getIndex", &Corpus::getIndex)
+		.const_method("getDocumentCount", &Corpus::getDocumentCount)
+		.const_method("getTotalCount", &Corpus::getTotalCount)
+		.const_method("getWordCount", &Corpus::getWordCount)
+		.const_method("getLength", &Corpus::getLength)
+		.const_method("getWord", &Corpus::getWord);
+}
