@@ -1,0 +1,10 @@
+Package: rtm
+Type: Package
+Title: Relational Topic Models
+Version: 1.0
+Date: 2010-10-29
+Author: Jonathan Chang
+Maintainer: Jonathan Chang <jonchang@fb.com>
+Description: This package implements the Relational Topic Model which models document collections connected by links.  Learned models can be used to make predictions about content and connectivity.
+License: LGPL
+LazyLoad: yes
