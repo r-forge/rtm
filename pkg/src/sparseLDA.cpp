@@ -3,6 +3,7 @@
 #include <cmath>
 #include <assert.h>
 #include <vector>
+#include <iostream>
 
 #define min(x, y) (((x) < (y)) ? (x) : (y)) 
 
@@ -21,11 +22,10 @@ class Corpus {
 						unsigned int V) {
 		words_ = words;
 		lengths_ = lengths;
-		D_ = words.size();
+		D_ = lengths.size();
 		V_ = V; 
 		//		words_(words), lengths_(lengths), D_(words.size()), V_(V) {
 		indices_.resize(D_);
-		
 		indices_[0] = 0;
 		total_count_ = lengths[0];
 		for (unsigned int ii = 1; ii < D_; ++ii) {
@@ -34,7 +34,9 @@ class Corpus {
 		}
 
 		counts_.resize(V);
-
+		for (unsigned int ii = 0; ii < V; ++ii) {
+			counts_[ii] = 0;
+		}
 		for (unsigned int ii = 0; ii < total_count_; ++ii) {
 			counts_[words[ii]]++;
 		}
@@ -350,7 +352,8 @@ class SparseRTM {
 RCPP_MODULE(rtm) {
 	using namespace Rcpp;
 
-	class_<Corpus>("Corpus")
+	class_<Corpus>("Corpus")		
+		.method("load", &Corpus::load)
 		.const_method("getIndex", &Corpus::getIndex)
 		.const_method("getDocumentCount", &Corpus::getDocumentCount)
 		.const_method("getTotalCount", &Corpus::getTotalCount)

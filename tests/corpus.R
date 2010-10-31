@@ -3,4 +3,7 @@ require(lda)
 
 data(cora.documents)
 
-rtm <- Module("rtm")
+my.corpus <- corpus(documents=cora.documents)
+
+stopifnot(my.corpus$getDocumentCount() == length(cora.documents))
+stopifnot(my.corpus$getWord(my.corpus$getIndex(3, 1)) == cora.documents[[4]][1,2])
