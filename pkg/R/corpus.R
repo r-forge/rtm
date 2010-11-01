@@ -22,7 +22,7 @@ corpus <- function(words, lengths, documents, V) {
       stop("V is too small.")
     }
   }
-  
+
   cc <- new(.module$Corpus)
   cc$load(words, lengths, V)
   return(cc);

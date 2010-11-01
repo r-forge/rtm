@@ -1,6 +1,7 @@
 import(methods)
-importClassesFrom(Rcpp, "C++Object", "C++Class", "Module", "C++ObjectS3")
+importClassesFrom(Rcpp, "C++Object", "C++Class", "Module")
 useDynLib(rtm)
 export(rtm)
 export(corpus)
+export(topics)
 

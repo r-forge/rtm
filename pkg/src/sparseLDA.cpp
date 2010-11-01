@@ -43,6 +43,8 @@ class Corpus {
 	}
 
 	unsigned int getIndex(int document, int word) const {
+		assert(word < V_);
+		assert(document < D_);
 		return indices_[document] + word;
 	}
 
@@ -55,10 +57,12 @@ class Corpus {
 	}
 
 	unsigned int getWordCount(int word) const {
+		assert(word < V_);
 		return counts_[word];
 	}
 
 	int getLength(int document) const {
+		assert(document < D_);
 		return lengths_[document];
 	}
 
@@ -72,20 +76,27 @@ class Corpus {
 };
 
 class Topics {
-	uint32_t* data_;
+	std::vector<uint32_t> data_;
 	unsigned int K_;
 	unsigned int V_;
-	uint32_t* indices_;
-	uint32_t* lengths_;
+	std::vector<uint32_t> indices_;
+	std::vector<uint32_t> lengths_;
 	unsigned int M_;
 	uint32_t mask_;
 
  public:
-  Topics(unsigned int K,
-				 const Corpus& corpus) :
-	K_(K), V_(corpus.getV()) {
-		indices_ = new uint32_t[V_];
-		lengths_ = new uint32_t[V_];
+  void loadR(unsigned int K, SEXP corpus) {
+		Rcpp::XPtr<Corpus> c(corpus);
+		load(K, *c);
+	}
+
+  void load(unsigned int K, const Corpus& corpus) {
+		//	K_(K), V_(corpus.getV()) {
+		K_ = K;
+		V_ = corpus.getV();
+
+		indices_.resize(V_);
+		lengths_.resize(V_);
 
 		indices_[0] = 0;
 		lengths_[0] = min(corpus.getWordCount(0), K);
@@ -97,31 +108,32 @@ class Topics {
 			total += lengths_[ii];
 		}
 
-		data_ = new uint32_t[total];
-
+		data_.resize(total);
+		for (unsigned int ii = 0; ii < total; ++ii) {
+			data_[ii] = 0;
+		}
 		// Set up M_ and mask_
 		M_ = ceil(log2(K));
 		mask_ = (1L << (M_)) - 1;
 	}
-	
-  ~Topics() {
-		delete indices_;
-		delete data_;
-	}
 
+	unsigned int getLength(int word) const {
+		return lengths_[word];
+	}
+	
 	class WordIterator {
-		uint32_t *word_data_;
+		unsigned int offset_;
 		unsigned int length_;
 		unsigned int index_;
 		Topics *topics_;
 		
 		unsigned int getIndexCount(int index) const {
-			return word_data_[index] >> topics_->M_;
+			return topics_->data_[offset_ + index] >> topics_->M_;
 		}
 
 	public:
    	WordIterator(int word, Topics* topics) : index_(0), topics_(topics) {
-			word_data_ = &topics->data_[topics->indices_[word]];
+			offset_ = topics->indices_[word];
 			length_ = topics->lengths_[word];
 		}
 		
@@ -130,7 +142,7 @@ class Topics {
 		}
 
 		bool end() const {
-			return index_ >= length_ && getCount() > 0;
+			return index_ >= length_ || getCount() == 0;
 		}
 
 		unsigned int getCount() const {
@@ -138,7 +150,7 @@ class Topics {
 		}
 
 		unsigned int getTopic() const {
-			return word_data_[index_] & topics_->mask_;
+			return topics_->data_[offset_ + index_] & topics_->mask_;
 		}		
 
 		unsigned int getIndex() const {
@@ -146,26 +158,34 @@ class Topics {
 		}
 
 		void swap(int index2) {
-			uint32_t temp = word_data_[index_];
-			word_data_[index_] = word_data_[index2];
-			word_data_[index2] = temp;
+			uint32_t temp = topics_->data_[offset_ + index_];
+			topics_->data_[offset_ + index_] = topics_->data_[offset_ + index2];
+			topics_->data_[offset_ + index2] = temp;
 		}
 
 		void setCountTopic(int count, int topic) {
 			assert(index_ < length_);
-			word_data_[index_] = (count << topics_->M_) + topic;
+			topics_->data_[offset_ + index_] = (count << topics_->M_) + topic;
+		}
+
+		void dumpState() {
+			for (int ii = 0; ii < length_; ++ii) { 
+				std::cout << ii << ":" << topics_->data_[offset_ + ii] << std::endl;
+			}
 		}
 
 		void modifyCount(int amount) {			
-			word_data_[index_] += amount << topics_->M_;
+			topics_->data_[offset_ + index_] += amount << topics_->M_;
 			if (index_ > 0 && amount == 1) {
-				if (word_data_[index_] > word_data_[index_ - 1]) {
+				if (topics_->data_[offset_ + index_] > 
+						topics_->data_[offset_ + index_ - 1]) {
 					swap(index_ - 1);
 					return;
 				}				
 			} 
 			if (index_ < length_ - 1 && amount == -1) {
-				if (word_data_[index_] < word_data_[index_ + 1]) {
+				if (topics_->data_[offset_ + index_] < 
+						topics_->data_[offset_ + index_ + 1]) {
 					swap(index_ + 1);
 					return;
 				}				
@@ -179,50 +199,76 @@ class Topics {
 		for (; !ii.end(); ii.next()) {
 			if (ii.getTopic() == topic) {
 				ii.modifyCount(amount);
+				return;
 			}
 		}
 
 		assert(amount == 1);
 		ii.setCountTopic(amount, topic);
 	}
+
+	Rcpp::Matrix<INTSXP> getTopics() const {		
+		Rcpp::Matrix<INTSXP> result(V_, K_);
+
+		for (int vv = 0; vv < V_; ++vv) {
+			for (int kk = 0; kk < K_; ++kk) {
+				result(vv, kk) = 0;
+			}
+
+			for (WordIterator ii(vv, const_cast<Topics*>(this)); 
+					 !ii.end(); ii.next()) {
+				assert(result(vv, ii.getTopic()) == 0);
+				//				ii.dumpState();
+				result(vv, ii.getTopic()) = ii.getCount();
+			}
+		}
+		return result;
+	}
 };
 
-
 class SparseRTM {
-	double *s_;
+	std::vector<double> s_;
 	double s_sum_;
-	double *r_;
+	std::vector<double> r_;
 	double r_sum_;
 
-	unsigned int *z_;
+	std::vector<unsigned int> z_;
 
 	double alpha_;
 	double eta_;
-	double *beta_;
+	std::vector<double> beta_;
 	
 	unsigned int K_;
 	unsigned int V_;
 	unsigned int D_;
 	
-	uint32_t *topic_sums_;
-	uint32_t *document_sums_;
+	std::vector<unsigned int> topic_sums_;
+	Rcpp::Matrix<INTSXP> document_sums_;
 
-  Topics* topics_;
-	const Corpus& corpus_;
+  Topics topics_;
+	const Corpus* corpus_;
 
-   SparseRTM(const Corpus& corpus, double alpha, double eta, double *beta, unsigned int K) :
-  	alpha_(alpha), eta_(eta), beta_(beta), K_(K), V_(corpus.getV()), corpus_(corpus) {
+	void load(const Corpus* corpus, double alpha, double eta, 
+						std::vector<double> beta, unsigned int K) { 
+		 //  	alpha_(alpha), eta_(eta), beta_(beta), K_(K), V_(corpus.getV()), corpus_(corpus) {
+	  alpha_ = alpha;
+	  eta_ = eta;
+	  beta_ = beta;
+	  K_ = K;
+	  V_ = corpus->getV();
+	  corpus_ = corpus;
 
-	  GetRNGstate();
-		topic_sums_ = new uint32_t[K];
-		document_sums_ = new uint32_t[D_];
-		topics_ = new Topics(K, corpus);
-
-		z_ = new unsigned int[corpus.getTotalCount()];
-		initializeZ();
+		// Init document sums
+		document_sums_ = Rcpp::Matrix<INTSXP>(K_, corpus_->getDocumentCount());
+	 
+	  topic_sums_.resize(K);
+	  topics_.load(K, *corpus);
+		 
+	  z_.resize(corpus->getTotalCount());
+	  initializeZ();
 
 		// Initialize s.
-		s_ = new double[K_];
+		s_.resize(K_);
 		s_sum_ = 0.0;
 		
 		for (unsigned int ii = 0; ii < K_; ++ii) {
@@ -231,66 +277,34 @@ class SparseRTM {
 		}
 
 		// Allocate r.
-		r_ = new double[K_];
+		r_.resize(K_);
 		r_sum_ = 0.0;		
-
-		PutRNGstate();
-	}
-
-	~SparseRTM() {
-		delete r_;
-		delete s_;
 	}
 
 	void initializeZ() {
-		for (unsigned int dd = 0; dd < corpus_.getDocumentCount(); ++dd) { 
-			for (int ww = 0; ww < corpus_.getLength(dd); ++ww) {
-				int index = corpus_.getIndex(dd, ww);
+	  GetRNGstate();
+		for (unsigned int dd = 0; dd < corpus_->getDocumentCount(); ++dd) { 
+			for (int ww = 0; ww < corpus_->getLength(dd); ++ww) {
+				int index = corpus_->getIndex(dd, ww);
 				z_[index] = unif_rand() * K_;
-				topics_->updateCount(corpus_.getWord(index), z_[index], 1);
+				topics_.updateCount(corpus_->getWord(index), z_[index], 1);
 				updateCounts(dd, z_[index], 1);
 			}
 		}
+		PutRNGstate();
 	}
 				
   void initializeR(int document) {
 		for (unsigned int ii = 0; ii < K_; ++ii) {
-			r_[ii] = document_sums_[ii + K_ * document] * eta_ / 
+			r_[ii] = document_sums_(ii, document) * eta_ / 
 				(V_ * eta_ + topic_sums_[ii]);
 			r_sum_ += r_[ii];
 		}
 	}
 
-	void iterateCorpus(int num_iterations) {
-		GetRNGstate();
-		for (int ii = 0; ii < num_iterations; ++ii) {
-			for (unsigned int dd = 0; dd < corpus_.getDocumentCount(); ++dd) {
-				iterateDocument(dd);
-			}
-		}
-		PutRNGstate();
-	}
-
-	void iterateDocument(int document) {
-		initializeR(document);
-		for (int ww = 0; ww < corpus_.getLength(document); ++ww) {
-			int index = corpus_.getIndex(document, ww);
-			int old_topic = z_[index];
-			topics_->updateCount(corpus_.getWord(index), old_topic, -1);
-			updateCounts(document, old_topic, -1);
-			updateSR(document, old_topic);
-
-			int new_topic = sampleWord(corpus_.getWord(index));
-			z_[index] = new_topic;
-			topics_->updateCount(corpus_.getWord(index), new_topic, 1);
-			updateCounts(document, new_topic, 1);
-			updateSR(document, new_topic);
-		}
-	}
-
   int sampleWord(int word) {
 		double q_sum = 0.0;
-		for (Topics::WordIterator ii(word, topics_);
+		for (Topics::WordIterator ii(word, &topics_);
 				 !ii.end(); ii.next()) {
 			int count = ii.getCount();
 			int topic = ii.getTopic();
@@ -316,7 +330,7 @@ class SparseRTM {
 			}			
 		} else {
 			U -= s_sum_ + r_sum_;			
-			for (Topics::WordIterator ii(word, topics_);
+			for (Topics::WordIterator ii(word, &topics_);
 					 !ii.end(); ii.next()) {
 				int count = ii.getCount();
 				int topic = ii.getTopic();
@@ -332,7 +346,7 @@ class SparseRTM {
 	}
 
 	void updateCounts(int document, int topic, int amount) {
-		document_sums_[topic + K_ * document] += amount;
+		document_sums_(topic, document) += amount;
 		topic_sums_[topic] += amount;
 	}
 
@@ -341,11 +355,62 @@ class SparseRTM {
 		r_sum_ -= r_[topic];
 		
 		s_[topic] = alpha_ * eta_ / (V_ * eta_ + topic_sums_[topic]);
-		r_[topic] = document_sums_[topic + K_ * document] * eta_ / 
+		r_[topic] = document_sums_(topic,  document) * eta_ / 
 			(V_ * eta_ + topic_sums_[topic]);
 		
 		s_sum_ += s_[topic];
 		r_sum_ += r_[topic];
+	}
+
+public:
+	// TODO:
+	//  * Test LDA
+	//  * Implement RTM
+  //  * De-serialization
+  //  * Print progress
+
+	void iterateCorpus(int num_iterations) {
+		GetRNGstate();
+		for (int ii = 0; ii < num_iterations; ++ii) {
+			for (unsigned int dd = 0; dd < corpus_->getDocumentCount(); ++dd) {
+				R_CheckUserInterrupt();
+				iterateDocument(dd);
+			}
+		}
+		PutRNGstate();
+	}
+
+	void iterateDocument(int document) {
+		initializeR(document);
+		for (int ww = 0; ww < corpus_->getLength(document); ++ww) {
+			int index = corpus_->getIndex(document, ww);
+			int old_topic = z_[index];
+			topics_.updateCount(corpus_->getWord(index), old_topic, -1);
+			updateCounts(document, old_topic, -1);
+			updateSR(document, old_topic);
+
+			int new_topic = sampleWord(corpus_->getWord(index));
+			z_[index] = new_topic;
+			topics_.updateCount(corpus_->getWord(index), new_topic, 1);
+			updateCounts(document, new_topic, 1);
+			updateSR(document, new_topic);
+		}
+	}
+
+	const std::vector<unsigned int>& getAssignments() const {
+		return z_;
+	}
+	
+	const std::vector<unsigned int>& getTopicSums() const {
+		return topic_sums_;
+	}
+	
+	const Rcpp::Matrix<INTSXP>& getTopics() const {
+		return topics_.getTopics();
+	}
+	
+	const Rcpp::Matrix<INTSXP>& getDocumentSums() const {
+		return document_sums_;
 	}
 };
 
@@ -359,5 +424,24 @@ RCPP_MODULE(rtm) {
 		.const_method("getTotalCount", &Corpus::getTotalCount)
 		.const_method("getWordCount", &Corpus::getWordCount)
 		.const_method("getLength", &Corpus::getLength)
+		.const_method("getV", &Corpus::getV)
 		.const_method("getWord", &Corpus::getWord);
+
+	class_<Topics>("Topics")		
+		.method("load", &Topics::loadR)
+		.const_method("getTopics", &Topics::getTopics)
+		.const_method("getLength", &Topics::getLength)
+		.method("updateCount", &Topics::updateCount);
+
+	class_<SparseRTM>("SparseRTM")
+		.method("load", &SparseRTM::loadR)
+		.const_method("getAssignments", &SparseRTM::getAssignments)
+		.const_method("getTopics", &SparseRTM::getTopics)
+		.const_method("getDocumentSums", &SparseRTM::getDocumentSums)
+		.const_method("getTopicSums", &SparseRTM::getTopicSums)
+		.method("iterateCorpus", &SparseRTM::iterateCorpus)
+		.method("iterateDocument", &SparseRTM::iterateDocument);
 }
+
+
+
