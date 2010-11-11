@@ -1,3 +1,25 @@
+links <- function(targets, lengths, list) {
+  if (missing(list) && (missing(targets) || missing(lengths))) {
+    stop("Either 'list' or both 'targets' and 'lengths' must be specified.")
+  }
+  if (!missing(list) && (!missing(targets) || !missing(lengths))) {
+    stop("Must not specify 'list' and 'targets'/'lengths'.")
+  }
+
+  if (!missing(list)) {
+    targets <- unlist(list)
+    lengths <- sapply(list, length)
+  } else {
+    if (length(targets) != sum(lengths)) {
+      stop("Length of targets does not match sum of lengths.")
+    }
+  }
+
+  cc <- new(.module$Links)
+  cc$load(targets, lengths)
+  return(cc);
+}
+                  
 corpus <- function(words, lengths, documents, V) {
   if (missing(documents) && (missing(words) || missing(lengths))) {
     stop("Either 'documents' or both 'words' and 'lengths' must be specified.")

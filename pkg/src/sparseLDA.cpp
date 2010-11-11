@@ -5,7 +5,44 @@
 #include <vector>
 #include <iostream>
 
+// TODO:
+//  * Finish/test RTM
+//  * Support train/test.
+
 #define min(x, y) (((x) < (y)) ? (x) : (y)) 
+
+class Links {
+	std::vector<unsigned int> links_;
+	std::vector<unsigned int> lengths_;
+	std::vector<unsigned int> indices_;
+	unsigned int D_;
+	
+public:
+	void load(const std::vector<unsigned int>& links,
+						const std::vector<unsigned int>& lengths) {
+		links_ = links;
+		lengths_ = lengths;
+
+		D_ = lengths.size();
+		indices_.resize(D_);
+		indices_[0] = 0;
+		for (int ii = 1; ii < D_; ++ii) {
+			indices_[ii] = indices_[ii - 1] + lengths_[ii - 1];
+		}
+	}
+
+	unsigned int getNumLinks(int document) const {
+		return lengths_[document];
+	}
+
+	unsigned int getTarget(int document, int offset) const {
+		return links_[indices_[document] + offset];
+	}	
+
+	unsigned int getDocumentCount() const {
+		return D_;
+	}	
+};
 
 class Corpus {
 	std::vector<unsigned int> words_;
@@ -157,9 +194,9 @@ class Topics {
 			return index_;
 		}
 
-		void swap(int index2) {
-			uint32_t temp = topics_->data_[offset_ + index_];
-			topics_->data_[offset_ + index_] = topics_->data_[offset_ + index2];
+		void swap(int index1, int index2) {
+			uint32_t temp = topics_->data_[offset_ + index1];
+			topics_->data_[offset_ + index1] = topics_->data_[offset_ + index2];
 			topics_->data_[offset_ + index2] = temp;
 		}
 
@@ -174,28 +211,42 @@ class Topics {
 			}
 		}
 
-		void modifyCount(int amount) {			
-			topics_->data_[offset_ + index_] += amount << topics_->M_;
-			if (index_ > 0 && amount == 1) {
-				if (topics_->data_[offset_ + index_] > 
-						topics_->data_[offset_ + index_ - 1]) {
-					swap(index_ - 1);
+		void bubbleSort(int position, int amount) {
+			if (position > 0 && amount == 1) {
+				if (topics_->data_[offset_ + position] > 
+						topics_->data_[offset_ + position - 1]) {
+					swap(position, position - 1);
+					bubbleSort(position - 1, amount);
 					return;
 				}				
 			} 
-			if (index_ < length_ - 1 && amount == -1) {
-				if (topics_->data_[offset_ + index_] < 
-						topics_->data_[offset_ + index_ + 1]) {
-					swap(index_ + 1);
+			if (position < length_ - 1 && amount == -1) {
+				if (topics_->data_[offset_ + position] < 
+						topics_->data_[offset_ + position + 1]) {
+					swap(position, position + 1);
+					bubbleSort(position + 1, amount);
 					return;
 				}				
 			}
+		}
+
+		void modifyCount(int amount) {			
+			topics_->data_[offset_ + index_] += amount << topics_->M_;
+			bubbleSort(index_, amount);
 		}
 	};
 
 	void updateCount(int word, unsigned int topic, int amount) {
 		assert(amount == 1 || amount == -1);
 		WordIterator ii(word, this);
+
+		/*
+			if (word == 633) {
+			std::cout << word << " " << topic << std::endl;
+			ii.dumpState();
+			}
+		*/
+
 		for (; !ii.end(); ii.next()) {
 			if (ii.getTopic() == topic) {
 				ii.modifyCount(amount);
@@ -245,11 +296,21 @@ class SparseRTM {
 	std::vector<unsigned int> topic_sums_;
 	Rcpp::Matrix<INTSXP> document_sums_;
 
+	std::vector<double> link_probs_;
+
   Topics topics_;
 	const Corpus* corpus_;
+	const Links* links_;
 
-	void load(const Corpus* corpus, double alpha, double eta, 
-						std::vector<double> beta, unsigned int K) { 
+	unsigned int q_assignments;
+	unsigned int s_assignments;
+	unsigned int r_assignments;
+
+	void load(const Corpus* corpus, 
+						const Links* links,
+						double alpha, double eta, 
+						std::vector<double> beta, 
+						unsigned int K) { 
 		 //  	alpha_(alpha), eta_(eta), beta_(beta), K_(K), V_(corpus.getV()), corpus_(corpus) {
 	  alpha_ = alpha;
 	  eta_ = eta;
@@ -258,6 +319,10 @@ class SparseRTM {
 	  V_ = corpus->getV();
 	  corpus_ = corpus;
 
+		link_probs_.resize(K_);
+		links_ = links;
+		assert(links->getDocumentCount() == corpus_->getDocumentCount());
+
 		// Init document sums
 		document_sums_ = Rcpp::Matrix<INTSXP>(K_, corpus_->getDocumentCount());
 	 
@@ -265,7 +330,6 @@ class SparseRTM {
 	  topics_.load(K, *corpus);
 		 
 	  z_.resize(corpus->getTotalCount());
-	  initializeZ();
 
 		// Initialize s.
 		s_.resize(K_);
@@ -281,20 +345,8 @@ class SparseRTM {
 		r_sum_ = 0.0;		
 	}
 
-	void initializeZ() {
-	  GetRNGstate();
-		for (unsigned int dd = 0; dd < corpus_->getDocumentCount(); ++dd) { 
-			for (int ww = 0; ww < corpus_->getLength(dd); ++ww) {
-				int index = corpus_->getIndex(dd, ww);
-				z_[index] = unif_rand() * K_;
-				topics_.updateCount(corpus_->getWord(index), z_[index], 1);
-				updateCounts(dd, z_[index], 1);
-			}
-		}
-		PutRNGstate();
-	}
-				
   void initializeR(int document) {
+		r_sum_ = 0.0;
 		for (unsigned int ii = 0; ii < K_; ++ii) {
 			r_[ii] = document_sums_(ii, document) * eta_ / 
 				(V_ * eta_ + topic_sums_[ii]);
@@ -314,6 +366,7 @@ class SparseRTM {
 		double U = unif_rand() * (r_sum_ + s_sum_ + q_sum);
 
 		if (U < s_sum_) {
+			s_assignments++;
 			for (unsigned int ii = 0; ii < K_; ++ii) {
 				if (U <= s_[ii]) {
 					return ii;
@@ -321,6 +374,7 @@ class SparseRTM {
 				U -= s_[ii];
 			}
 		} else if (U < s_sum_ + r_sum_) {
+			r_assignments++;
 			U -= s_sum_;
 			for (unsigned int ii = 0; ii < K_; ++ii) {
 				if (U <= r_[ii]) {
@@ -329,6 +383,7 @@ class SparseRTM {
 				U -= r_[ii];
 			}			
 		} else {
+			q_assignments++;
 			U -= s_sum_ + r_sum_;			
 			for (Topics::WordIterator ii(word, &topics_);
 					 !ii.end(); ii.next()) {
@@ -345,6 +400,23 @@ class SparseRTM {
 		assert(false);
 	}
 
+	void initializeLinks(int document) {		
+		for (int kk = 0; kk < K_; ++kk) {
+			link_probs_[kk] = 1.0;
+		}
+
+		for (int ii = 0; ii < links_->getNumLinks(document); +ii) {
+			int doc2 = links_->getTarget(document, ii);
+			assert(doc2 >= 0 && doc2 < D_);
+			for (int kk = 0; kk < K_; ++kk) {
+				link_probs_[kk] *= 
+					exp(beta_[kk] * document_sums_(kk, doc2) / 
+							corpus_->getLength(document) / 
+							corpus_->getLength(doc2));
+			}
+		}
+	}
+	
 	void updateCounts(int document, int topic, int amount) {
 		document_sums_(topic, document) += amount;
 		topic_sums_[topic] += amount;
@@ -363,25 +435,63 @@ class SparseRTM {
 	}
 
 public:
-	// TODO:
-	//  * Test LDA
-	//  * Implement RTM
-  //  * De-serialization
-  //  * Print progress
+	void loadR(SEXP corpus, 
+						 SEXP links,
+						 double alpha, double eta, 
+						 std::vector<double> beta, unsigned int K) { 
+		Rcpp::XPtr<Corpus> c(corpus);
+		Rcpp::XPtr<Links> d(links);
+		load(c, d, alpha, eta, beta, K);
+	}
 
-	void iterateCorpus(int num_iterations) {
-		GetRNGstate();
-		for (int ii = 0; ii < num_iterations; ++ii) {
-			for (unsigned int dd = 0; dd < corpus_->getDocumentCount(); ++dd) {
-				R_CheckUserInterrupt();
-				iterateDocument(dd);
+	void initializeRandom() {
+	  GetRNGstate();
+		for (unsigned int dd = 0; dd < corpus_->getDocumentCount(); ++dd) { 
+			for (int ww = 0; ww < corpus_->getLength(dd); ++ww) {
+				int index = corpus_->getIndex(dd, ww);
+				z_[index] = unif_rand() * K_;
+				topics_.updateCount(corpus_->getWord(index), z_[index], 1);
+				updateCounts(dd, z_[index], 1);
 			}
 		}
 		PutRNGstate();
 	}
 
+	void initialize(std::vector<unsigned int> assignments) {
+		for (unsigned int dd = 0; dd < corpus_->getDocumentCount(); ++dd) { 
+			for (int ww = 0; ww < corpus_->getLength(dd); ++ww) {
+				int index = corpus_->getIndex(dd, ww);
+				z_[index] = assignments[index];
+				topics_.updateCount(corpus_->getWord(index), z_[index], 1);
+				updateCounts(dd, z_[index], 1);
+			}
+		}
+	}
+
+	void iterateCorpus(int num_iterations) {
+		GetRNGstate();
+		q_assignments = 0;
+		r_assignments = 0;
+		s_assignments = 0;
+		for (int ii = 0; ii < num_iterations; ++ii) {
+			std::cout << "Iteration " << ii;
+			for (unsigned int dd = 0; dd < corpus_->getDocumentCount(); ++dd) {
+				if (dd % 100 == 0) {
+					std::cout << ".";
+				}
+				R_CheckUserInterrupt();
+				iterateDocument(dd);
+			}
+			std::cout << "Q: " << q_assignments << "(" << (double)q_assignments / (q_assignments + r_assignments + s_assignments) << "%) ";
+			std::cout << "R: " << r_assignments << "(" << (double)r_assignments / (q_assignments + r_assignments + s_assignments) << "%) ";
+			std::cout << "S: " << s_assignments << "(" << (double)s_assignments / (q_assignments + r_assignments + s_assignments) << "%) " << std::endl;
+		}
+		PutRNGstate();
+	}
+
 	void iterateDocument(int document) {
-		initializeR(document);
+		initializeLinks(document);
+		initializeR(document);		
 		for (int ww = 0; ww < corpus_->getLength(document); ++ww) {
 			int index = corpus_->getIndex(document, ww);
 			int old_topic = z_[index];
@@ -405,7 +515,7 @@ public:
 		return topic_sums_;
 	}
 	
-	const Rcpp::Matrix<INTSXP>& getTopics() const {
+	Rcpp::Matrix<INTSXP> getTopics() const {
 		return topics_.getTopics();
 	}
 	
@@ -416,6 +526,12 @@ public:
 
 RCPP_MODULE(rtm) {
 	using namespace Rcpp;
+
+	class_<Links>("Links")		
+		.method("load", &Links::load)
+		.const_method("getNumLinks", &Links::getNumLinks)
+		.const_method("getTarget", &Links::getTarget)
+		.const_method("getDocumentCount", &Links::getDocumentCount);
 
 	class_<Corpus>("Corpus")		
 		.method("load", &Corpus::load)
@@ -440,7 +556,9 @@ RCPP_MODULE(rtm) {
 		.const_method("getDocumentSums", &SparseRTM::getDocumentSums)
 		.const_method("getTopicSums", &SparseRTM::getTopicSums)
 		.method("iterateCorpus", &SparseRTM::iterateCorpus)
-		.method("iterateDocument", &SparseRTM::iterateDocument);
+		.method("iterateDocument", &SparseRTM::iterateDocument)
+		.method("initialize", &SparseRTM::initialize)
+		.method("initializeRandom", &SparseRTM::initializeRandom);
 }
 
 
