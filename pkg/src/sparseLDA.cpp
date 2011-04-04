@@ -8,6 +8,7 @@
 // TODO:
 //  * Finish/test RTM
 //  * Support train/test.
+//  * sLDA
 
 #define min(x, y) (((x) < (y)) ? (x) : (y)) 
 
@@ -53,10 +54,14 @@ class Corpus {
 	std::vector<unsigned int> indices_;
 	unsigned int total_count_;
 
+	Rcpp::Matrix<REALSXP> annotations_;
+	unsigned int num_annotations_;
+
  public:
 	void load(const std::vector<unsigned int>& words,
 						const std::vector<unsigned int>& lengths,
 						unsigned int V) {
+		num_annotations_ = 0;
 		words_ = words;
 		lengths_ = lengths;
 		D_ = lengths.size();
@@ -77,6 +82,24 @@ class Corpus {
 		for (unsigned int ii = 0; ii < total_count_; ++ii) {
 			counts_[words[ii]]++;
 		}
+	}
+
+	void setAnnotations(Rcpp::Matrix<REALSXP> annotations) {
+		annotations_ = annotations;
+		num_annotations_ = annotations.nrow();
+		assert(annotations.ncol() == D_);
+	}
+
+	unsigned int getNumAnnotations() const {
+		return num_annotations_;		
+	}
+
+	std::vector<double> getAnnotations(unsigned int document) const {
+		std::vector<double> result;
+		for (int ii = 0; ii < num_annotations_; ++ii) {
+			result.push_back(annotations_[ii + document * num_annotations_]);
+		}
+		return result;
 	}
 
 	unsigned int getIndex(int document, int word) const {
@@ -277,6 +300,176 @@ class Topics {
 	}
 };
 
+class HiddenMarkovTM {
+  std::vector<unsigned int> z_;
+  Rcpp::Matrix<INTSXP> transition_counts_;
+	std::vector<unsigned int> topic_sums_;
+
+  double alpha_;
+	double eta_;
+	unsigned int K_;
+  unsigned int V_;
+
+  Topics topics_;
+	const Corpus* corpus_;
+
+	void updateCounts(int topic, int amount,
+                    int prev_topic, int next_topic) {
+    if (prev_topic != -1) {
+      transition_counts_(prev_topic, topic) += amount;
+    }
+    if (next_topic != -1) {
+      transition_counts_(topic, next_topic) += amount;
+    }
+		topic_sums_[topic] += amount;
+	}
+
+  std::vector<double> tmp_;
+
+  int sampleWord(int word, int prev_z, int next_z) {
+    for (int ii = 0; ii < K_; ++ii) {
+      tmp_[ii] = eta_;
+    }
+
+		for (Topics::WordIterator ii(word, &topics_);
+				 !ii.end(); ii.next()) {
+			int count = ii.getCount();
+			int topic = ii.getTopic();
+      tmp_[topic] += count;
+		}
+
+    double tmp_sum = 0.0;
+    for (int ii = 0; ii < K_; ++ii) {
+      if (prev_z != -1) {
+        tmp_[ii] *= transition_counts_(prev_z, ii) + alpha_; 
+      }
+      if (next_z != -1) {
+        tmp_[ii] *= (transition_counts_(ii, next_z) + alpha_) / (topic_sums_[ii] + alpha_ * K_);
+      }
+      tmp_[ii] /= topic_sums_[ii] + V_ * eta_;
+      tmp_sum += tmp_[ii];
+    }
+
+		double U = unif_rand() * tmp_sum;
+
+		for (unsigned int ii = 0; ii < K_; ++ii) {
+      if (U <= tmp_[ii]) {
+        return ii;
+      }
+      U -= tmp_[ii];
+    }			
+		assert(false);
+	}
+
+	void load(const Corpus* corpus, 
+						double alpha, double eta, 
+						unsigned int K) { 
+	  alpha_ = alpha;
+	  eta_ = eta;
+
+    K_ = K;
+	  V_ = corpus->getV();
+	  corpus_ = corpus;
+
+    transition_counts_ = Rcpp::Matrix<INTSXP>(K_, K_);
+	  topic_sums_.resize(K);
+	  topics_.load(K, *corpus);
+		 
+	  z_.resize(corpus->getTotalCount());
+    tmp_.resize(K_);
+	}
+
+public:
+	void initializeRandom() {
+	  GetRNGstate();
+		for (unsigned int dd = 0; dd < corpus_->getDocumentCount(); ++dd) { 
+			for (int ww = 0; ww < corpus_->getLength(dd); ++ww) {
+				int index = corpus_->getIndex(dd, ww);
+				z_[index] = unif_rand() * K_;
+				topics_.updateCount(corpus_->getWord(index), z_[index], 1);
+			}
+
+			for (int ww = 0; ww < corpus_->getLength(dd); ++ww) {
+				int index = corpus_->getIndex(dd, ww);
+        int prev_topic = -1;
+        if (ww > 0) {
+          prev_topic = z_[index - 1];
+        }
+        int next_topic = -1;
+        if (ww < corpus_->getLength(dd) - 1) {
+          next_topic= z_[index + 1];
+        }
+        updateCounts(z_[index], 1, prev_topic, next_topic);
+			}
+		}
+		PutRNGstate();
+	}
+
+  void iterateDocument(int document) {
+		for (int ww = 0; ww < corpus_->getLength(document); ++ww) {
+			int index = corpus_->getIndex(document, ww);
+			int old_topic = z_[index];
+     
+      int prev_topic = -1;
+      if (ww > 0) {
+        prev_topic = z_[index - 1];
+      }
+      int next_topic = -1;
+      if (ww < corpus_->getLength(document) - 1) {
+        next_topic= z_[index + 1];
+      }
+      
+      updateCounts(old_topic, -1, prev_topic, next_topic);
+			topics_.updateCount(corpus_->getWord(index), old_topic, -1);
+
+			int new_topic = sampleWord(corpus_->getWord(index), prev_topic, next_topic);
+			z_[index] = new_topic;
+      updateCounts(new_topic, 1, prev_topic, next_topic);
+			topics_.updateCount(corpus_->getWord(index), new_topic, 1);
+		}
+  }
+
+	void loadR(SEXP corpus, 
+						 double alpha, double eta, 
+						 unsigned int K) { 
+		Rcpp::XPtr<Corpus> c(corpus);
+		load(c, alpha, eta, K);
+	}
+
+	const std::vector<unsigned int>& getAssignments() const {
+		return z_;
+	}
+	
+	const std::vector<unsigned int>& getTopicSums() const {
+		return topic_sums_;
+	}
+	
+	Rcpp::Matrix<INTSXP> getTopics() const {
+		return topics_.getTopics();
+	}
+	
+	const Rcpp::Matrix<INTSXP>& getTransitionCounts() const {
+		return transition_counts_;
+	}
+
+	void iterateCorpus(int num_iterations) {
+		GetRNGstate();
+		for (int ii = 0; ii < num_iterations; ++ii) {
+			std::cout << "Iteration " << ii << std::endl;
+			for (unsigned int dd = 0; dd < corpus_->getDocumentCount(); ++dd) {
+				// 
+				//				if (dd % 100 == 0) {
+				//					std::cout << ".";
+				//				}
+				R_CheckUserInterrupt();
+				iterateDocument(dd);
+			}
+		}
+		PutRNGstate();
+	}
+};
+
+
 class SparseRTM {
 	std::vector<double> s_;
 	double s_sum_;
@@ -295,7 +488,6 @@ class SparseRTM {
 	
 	std::vector<unsigned int> topic_sums_;
 	Rcpp::Matrix<INTSXP> document_sums_;
-
 	std::vector<double> link_probs_;
 
   Topics topics_;
@@ -305,6 +497,8 @@ class SparseRTM {
 	unsigned int q_assignments;
 	unsigned int s_assignments;
 	unsigned int r_assignments;
+
+	std::vector<double> annotation_weight;
 
 	void load(const Corpus* corpus, 
 						const Links* links,
@@ -318,6 +512,8 @@ class SparseRTM {
 	  K_ = K;
 	  V_ = corpus->getV();
 	  corpus_ = corpus;
+
+		annotation_weight.resize(corpus->getNumAnnotations());
 
 		link_probs_.resize(K_);
 		links_ = links;
@@ -416,7 +612,43 @@ class SparseRTM {
 			}
 		}
 	}
-	
+
+	// Coefficients are gamma.
+	// We memoize the sum:
+	//   A = (1/N) \sum_w gamma[z_w]
+
+	// We can rewrite the impact of the probability by:
+	// exp(-(x - (1 / N) \sum_w gamma[z_w])^2 / (2 * sigma^2))
+  //  = exp(-(x - A)^2 / (2 * sigma^2))
+	// x^2 term in constant /wrt choice of z_w, so
+	// exp(x * A / sigma^2 - A^2 / (2 * sigma^2))
+
+	// Now denote A = A' + gamma[z_w] / N <- word to be sampled.
+	// A' is constant.
+	// exp(x * (A' + gamma[z_w] / N) / sigma^2 - (A' + gamma[z_w] / N)^2 / (2 * sigma^2))
+	// exp(x * gamma[z_w] / N / sigma^2) * exp(-A' * gamma[z_w] / N / sigma^2) * exp(-gamma[z_w]^2 / N^2 / 2 / sigma^2)
+	// Let G = gamma[z_w] / N
+	// exp((x - A') * G / sigma^2) * exp(-G^2 / 2 /sigma^2)
+	// = exp((-G / 2 + (x - A')) * G / sigma^2)
+
+	// annotation_weight = (x - A')
+#if 0
+	void initializeAnnotations(int document) {
+		std::vector<double> annotations = corpus_->getAnnotations(document);
+		assert(annotations.size() == corpus_->getNumAnnotations());
+		unsigned int N = corpus_->getWordCount(document);
+		for (int ii = 0; ii < corpus_->getNumAnnotations(); ++ii) {
+			annotation_weight[ii] = annotations[ii];
+			for (int ww = 0; ww < N; ++ww) {
+				int z_w = z_[getIndex(document, ww)];
+				annotation_weight[ii] -= gamma_[z_w] / N;
+			}
+		}
+
+		exp(G * (annotation_weight[ii] - G / 2) / variance);
+	}
+#endif
+
 	void updateCounts(int document, int topic, int amount) {
 		document_sums_(topic, document) += amount;
 		topic_sums_[topic] += amount;
@@ -476,9 +708,10 @@ public:
 		for (int ii = 0; ii < num_iterations; ++ii) {
 			std::cout << "Iteration " << ii;
 			for (unsigned int dd = 0; dd < corpus_->getDocumentCount(); ++dd) {
-				if (dd % 100 == 0) {
-					std::cout << ".";
-				}
+				// 
+				//				if (dd % 100 == 0) {
+				//					std::cout << ".";
+				//				}
 				R_CheckUserInterrupt();
 				iterateDocument(dd);
 			}
@@ -524,6 +757,7 @@ public:
 	}
 };
 
+
 RCPP_MODULE(rtm) {
 	using namespace Rcpp;
 
@@ -535,6 +769,9 @@ RCPP_MODULE(rtm) {
 
 	class_<Corpus>("Corpus")		
 		.method("load", &Corpus::load)
+		.method("setAnnotations", &Corpus::setAnnotations)
+		.const_method("getNumAnnotations", &Corpus::getNumAnnotations)
+		.const_method("getAnnotations", &Corpus::getAnnotations)
 		.const_method("getIndex", &Corpus::getIndex)
 		.const_method("getDocumentCount", &Corpus::getDocumentCount)
 		.const_method("getTotalCount", &Corpus::getTotalCount)
@@ -559,6 +796,16 @@ RCPP_MODULE(rtm) {
 		.method("iterateDocument", &SparseRTM::iterateDocument)
 		.method("initialize", &SparseRTM::initialize)
 		.method("initializeRandom", &SparseRTM::initializeRandom);
+
+  class_<HiddenMarkovTM>("HiddenMarkovTM")
+		.method("load", &HiddenMarkovTM::loadR)
+		.const_method("getAssignments", &HiddenMarkovTM::getAssignments)
+		.const_method("getTopics", &HiddenMarkovTM::getTopics)
+		.const_method("getTransitionCounts", &HiddenMarkovTM::getTransitionCounts)
+		.const_method("getTopicSums", &HiddenMarkovTM::getTopicSums)
+		.method("iterateCorpus", &HiddenMarkovTM::iterateCorpus)
+		.method("iterateDocument", &HiddenMarkovTM::iterateDocument)
+		.method("initializeRandom", &HiddenMarkovTM::initializeRandom);
 }
 
 

@@ -7,4 +7,4 @@ export(corpus)
 export(topics)
 export(lda)
 export(rtm)
-
+export(hidden.markov.lda)
