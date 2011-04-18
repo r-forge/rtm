@@ -58,6 +58,8 @@ class Corpus {
 	unsigned int num_annotations_;
 
  public:
+  Corpus() { } 
+
 	void load(const std::vector<unsigned int>& words,
 						const std::vector<unsigned int>& lengths,
 						unsigned int V) {
@@ -380,6 +382,8 @@ class HiddenMarkovTM {
 	}
 
 public:
+  HiddenMarkovTM() { }
+
 	void initializeRandom() {
 	  GetRNGstate();
 		for (unsigned int dd = 0; dd < corpus_->getDocumentCount(); ++dd) { 
@@ -768,6 +772,7 @@ RCPP_MODULE(rtm) {
 		.const_method("getDocumentCount", &Links::getDocumentCount);
 
 	class_<Corpus>("Corpus")		
+    .constructor()
 		.method("load", &Corpus::load)
 		.method("setAnnotations", &Corpus::setAnnotations)
 		.const_method("getNumAnnotations", &Corpus::getNumAnnotations)
@@ -798,6 +803,7 @@ RCPP_MODULE(rtm) {
 		.method("initializeRandom", &SparseRTM::initializeRandom);
 
   class_<HiddenMarkovTM>("HiddenMarkovTM")
+    .constructor()
 		.method("load", &HiddenMarkovTM::loadR)
 		.const_method("getAssignments", &HiddenMarkovTM::getAssignments)
 		.const_method("getTopics", &HiddenMarkovTM::getTopics)

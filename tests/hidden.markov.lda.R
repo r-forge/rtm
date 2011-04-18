@@ -7,7 +7,7 @@ data(cora.vocab)
 set.seed(8675309)
 
 my.corpus <- corpus(documents = cora.documents)
-model <- hidden.topic.lda(my.corpus, 10L)
+model <- hidden.markov.lda(my.corpus, 10L)
 system.time(model$iterateCorpus(25L))
 
 top <- model$getTopics()

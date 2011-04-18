@@ -14,7 +14,7 @@ hidden.markov.lda <- function(corpus,
   }
   corpus.pointer <- get(".pointer", envir = as.environment(corpus))
 
-  tt <- new(.module$HiddenTopicTM)
+  tt <- new(.module$HiddenMarkovTM)
   tt$load(corpus.pointer, alpha, eta, K)
   if (is.null(initial)) {
     tt$initializeRandom()
