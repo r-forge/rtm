@@ -3,6 +3,7 @@
 
 #include "Corpus.h"
 #include "Posterior.h"
+#include "Sampler.h"
 
 RCPP_MODULE(rtm) {
 
@@ -13,9 +14,9 @@ RCPP_MODULE(rtm) {
     .const_method("getWord", &DiscreteDocumentData::getWord)
     .const_method("numWords", &DiscreteDocumentData::numWords);
 
-  Rcpp::class_<ContinuousDocumentData>("ContinuousDocumentData")
+  Rcpp::class_<ContinuousAnnotationDocumentData>("ContinuousAnnotationDocumentData")
     .constructor<double>()
-    .const_method("getValue", &ContinuousDocumentData::getValue);
+    .const_method("getValue", &ContinuousAnnotationDocumentData::getValue);
 
   Rcpp::class_<Document>("Document")
     .constructor<Rcpp::List>()
@@ -25,4 +26,16 @@ RCPP_MODULE(rtm) {
     .constructor<Rcpp::List>()
     .method("numDocuments", &Corpus::numDocuments)
     .method("getDocument", &Corpus::getRDocument);
+
+  Rcpp::class_<DirichletPosterior>("DirichletPosterior")
+    .constructor<int, int, double>();
+
+  Rcpp::class_<DiscretePosterior>("DiscretePosterior")
+    .constructor<int, int, double>();
+
+  Rcpp::class_<ContinuousAnnotationPosterior>("ContinuousAnnotationPosterior")
+    .constructor<std::vector<double>, double>();
+
+//  Rcpp::class_<Sampler>("Sampler")
+//    .constructor();
 }

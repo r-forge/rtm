@@ -28,9 +28,9 @@ private:
   std::vector<int> words_;
 };
 
-class ContinuousDocumentData : public DocumentData {
+class ContinuousAnnotationDocumentData : public DocumentData {
 public:
-  ContinuousDocumentData(double value) :
+  ContinuousAnnotationDocumentData(double value) :
     DocumentData(), value_(value) { }
 
   const double getValue() const {
@@ -42,18 +42,26 @@ private:
 };
 
 template<typename T>
+T* wrappedObject(SEXP o) {
+  return reinterpret_cast<T*>(
+    Rcpp::Environment(o).get(".pointer"));
+}
+
+template<typename T>
 class WrappedList {
 public:
   WrappedList(const Rcpp::List& data) : Rdata_(data), data_(data.size()) {
     for (int ii = 0; ii < data.size(); ++ii) {
-      data_.push_back(
-        reinterpret_cast<T*>(
-          Rcpp::Environment((SEXP)data[ii]).get(".pointer")));
+      data_.push_back(wrappedObject<T>(data[ii]));
     }
   }
 
   const T& getData(const size_t index) const {
     return *data_[index];
+  }
+
+  T* getMutableData(const size_t index) const {
+    return data_[index];
   }
 
   SEXP getRData(const size_t index) const {
@@ -71,7 +79,7 @@ private:
 
 class Document {
 public:
-  Document(Rcpp::List data) : data_(data) {
+  Document(Rcpp::List data) : data_(data), index_(-1) {
   }
 
   const DocumentData& getData(const size_t index) const {
@@ -82,13 +90,25 @@ public:
     return data_.getRData(index);
   }
 
+  void setIndex(int index) {
+    index_ = index;
+  }
+
+  int getIndex() const {
+    return index_;
+  }
+
 private:
   WrappedList<DocumentData> data_;
+  int index_;
 };
 
 class Corpus {
 public:
   Corpus(Rcpp::List documents) : documents_(documents) {
+    for (int ii = 0; ii < documents_.size(); ++ii) {
+      documents_.getMutableData(ii)->setIndex(ii);
+    }
   }
 
   const Document& getDocument(const size_t index) const {
